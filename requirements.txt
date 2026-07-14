@@ -1,3 +1,6 @@
 streamlit
-Pillow
 google-genai
+pydantic
+pillow
+numpy
+opencv-python-headless
