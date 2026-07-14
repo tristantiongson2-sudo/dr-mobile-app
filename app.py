@@ -9,7 +9,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 st.set_page_config(page_title="DR Mobile Assistant", layout="wide")
-st.title("👁️ DR Mobile Assistant with Super-Vision Preprocessing")
+st.title("👁️ DR Mobile Assistant with Quadrant-Split Visual Engineering")
 
 # Define structured output format
 class Lesion(BaseModel):
@@ -36,43 +36,40 @@ if "chat_history" not in st.session_state:
 if "last_uploaded" not in st.session_state:
     st.session_state.last_uploaded = None
 
-# --- NEW: ADVANCED SUPER-VISION PREPROCESSING ENGINE ---
-def preprocess_super_vision(pil_image):
+# --- UPGRADED: VIBRANCE & UNSHARP MASK (NO CLAHE) ---
+def preprocess_vibrance_sharpen(pil_image):
     # Convert PIL Image to OpenCV BGR format
     img_bgr = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     
-    # STAGE 1: CLAHE (Luminance/Shadow Correction)
-    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    l_channel, a_channel, b_channel = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    cl = clahe.apply(l_channel)
-    img_clahe = cv2.cvtColor(cv2.merge((cl, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
-    
-    # STAGE 2: HSV Saturation Tuning (Smart Vibrance Boost)
-    hsv = cv2.cvtColor(img_clahe, cv2.COLOR_BGR2HSV)
+    # 1. HSV Saturation Tuning (Vibrance Boost)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    # Scale up saturation to make faint yellows/reds highly distinct from background tissue
-    s_boosted = cv2.addWeighted(s, 1.3, np.zeros(s.shape, s.dtype), 0, 10)
+    # Boost saturation to isolate faint yellow exudates from the red retinal background
+    s_boosted = cv2.addWeighted(s, 1.4, np.zeros(s.shape, s.dtype), 0, 15)
     img_vibrant = cv2.cvtColor(cv2.merge((h, s_boosted, v)), cv2.COLOR_HSV2BGR)
     
-    # STAGE 3: Unsharp Masking (Sharpness Enhancement for Micro-Lesions)
+    # 2. Unsharp Masking (Micro-Edge Sharpening)
     gaussian_blur = cv2.GaussianBlur(img_vibrant, (5, 5), 1.5)
-    img_sharpened = cv2.addWeighted(img_vibrant, 1.5, gaussian_blur, -0.5, 0)
+    img_sharpened = cv2.addWeighted(img_vibrant, 1.6, gaussian_blur, -0.6, 0)
     
     # Convert back to PIL RGB
     final_rgb = cv2.cvtColor(img_sharpened, cv2.COLOR_BGR2RGB)
     return Image.fromarray(final_rgb)
 
-# --- STANDARD BASE CLAHE FOR SIDE-BY-SIDE VISUAL COMPARISON ---
-def preprocess_only_clahe(pil_image):
-    img_bgr = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
-    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    img_clahe = cv2.cvtColor(cv2.merge((clahe.apply(l), a, b)), cv2.COLOR_LAB2BGR)
-    return Image.fromarray(cv2.cvtColor(img_clahe, cv2.COLOR_BGR2RGB))
+# --- NEW: QUADRANT SPLITTING ENGINE ---
+def split_into_quadrants(pil_image):
+    width, height = pil_image.size
+    w_half, h_half = width // 2, height // 2
+    
+    # Crop into standard coordinate quadrants
+    q_top_left = pil_image.crop((0, 0, w_half, h_half))
+    q_top_right = pil_image.crop((w_half, 0, width, h_half))
+    q_bottom_left = pil_image.crop((0, h_half, w_half, height))
+    q_bottom_right = pil_image.crop((w_half, h_half, width, height))
+    
+    return q_top_left, q_top_right, q_bottom_left, q_bottom_right
 
-# --- HYBRID MAPPING FUNCTION ---
+# --- HYBRID PATHOLOGY MAPPING ---
 def map_retina(pil_image, lesions):
     rgb_image = pil_image.convert("RGB")
     width, height = rgb_image.size
@@ -152,41 +149,55 @@ if uploaded_file is not None:
         st.session_state.last_uploaded = uploaded_file.name
 
     original_image = Image.open(uploaded_file)
-    clahe_only_image = preprocess_only_clahe(original_image)
-    super_enhanced_image = preprocess_super_vision(original_image)
+    processed_image = preprocess_vibrance_sharpen(original_image)
     
-    st.write("### 🎛️ Diagnostic Preprocessing Pipeline Dashboard")
-    col1, col2, col3 = st.columns(3)
-    with col1: 
-        st.image(original_image, caption="1. Original Raw Upload", use_container_width=True)
-    with col2: 
-        st.image(clahe_only_image, caption="2. CLAHE Only (Lighting Balanced)", use_container_width=True)
-    with col3: 
-        st.image(super_enhanced_image, caption="3. Super-Vision (CLAHE + Vibrance + Sharpness)", use_container_width=True)
+    # Split the vibrant/sharpened image into quadrants
+    q_tl, q_tr, q_bl, q_br = split_into_quadrants(processed_image)
     
-    if st.button("Run Diagnostics & Open Consultation Room", type="primary"):
+    st.write("### 🎛️ Clinical Preprocessing & Quadrant Division")
+    col_orig, col_proc = st.columns(2)
+    with col_orig: 
+        st.image(original_image, caption="1. Original Raw Retinal File", use_container_width=True)
+    with col_proc: 
+        st.image(processed_image, caption="2. Vibrance & Edge Sharpened Image", use_container_width=True)
+    
+    # Display the quadrants in a beautiful 4-column row
+    st.write("#### 🧩 Quadrant breakdown (Enhanced for Detailed Local Analysis)")
+    q_cols = st.columns(4)
+    with q_cols[0]: st.image(q_tl, caption="Quadrant I (Top-Left)", use_container_width=True)
+    with q_cols[1]: st.image(q_tr, caption="Quadrant II (Top-Right)", use_container_width=True)
+    with q_cols[2]: st.image(q_bl, caption="Quadrant III (Bottom-Left)", use_container_width=True)
+    with q_cols[3]: st.image(q_br, caption="Quadrant IV (Bottom-Right)", use_container_width=True)
+    
+    if st.button("Run Multi-Quadrant Analysis", type="primary"):
         if not api_key:
             st.error("Configuration Error: API Key not found.")
         else:
-            with st.spinner("Analyzing cross-referenced image channels natively..."):
+            with st.spinner("Analyzing all 4 quadrants concurrently..."):
                 try:
                     client = genai.Client(api_key=api_key)
                     
-                    # Passing both raw and super-enhanced images allows full spatial contrast cross-referencing
+                    # Passing original, overall processed, and all four individual quadrants
                     prompt = (
-                        "Analyze these two representations of the same eye (the raw photo and the super-enhanced version combining CLAHE, vibrance color manipulation, and unsharp masking). "
-                        "CRITICAL STRUCTURAL INSTRUCTION: Look at the peripheral borders and outer quadrant circles of the retina. "
-                        "The super-enhanced imagery has amplified chemical colors and edge definitions specifically to uncover micro-lesions trying to hide in vignetted or blurry regions.\n\n"
+                        "You are an elite clinical retinal analyst evaluating fundus frames.\n\n"
+                        "To prevent missing faint, hidden pathologies near the boundaries, we have processed this image and split it into four distinct quadrants:\n"
+                        "- Quadrant 1: Top-Left\n"
+                        "- Quadrant 2: Top-Right\n"
+                        "- Quadrant 3: Bottom-Left\n"
+                        "- Quadrant 4: Bottom-Right\n\n"
+                        "CRITICAL SEARCH INSTRUCTION:\n"
+                        "Examine each of the four provided quadrants individually. Specifically search the outer edges of each quadrant for very faint yellow spots (light/hard exudates) or cotton wool structures.\n\n"
+                        "COORDINATE MAPPING RULE:\n"
+                        "You must calculate and output the coordinates (`box_2d`) normalized relative to the coordinate space of the MAIN, OVERALL original image (0 to 1000 scale, format [ymin, xmin, ymax, xmax]). Do not use crop-relative coordinates.\n\n"
                         "Classify using exact ICDR criteria:\n"
                         "- No DR: Zero abnormalities.\n"
                         "- Mild NPDR: Microaneurysms only.\n"
-                        "- Moderate NPDR: Explicit presence of hard/light exudates, cotton wool spots, or intraretinal blot hemorrhages.\n"
-                        "Locate abnormalities and output boxes as [ymin, xmin, ymax, xmax] normalized to 0-1000."
+                        "- Moderate NPDR: Explicit presence of hard/light exudates, cotton wool spots, or intraretinal blot hemorrhages."
                     )
                     
                     response = client.models.generate_content(
                         model='gemini-3.5-flash',
-                        contents=[original_image, super_enhanced_image, prompt],
+                        contents=[original_image, processed_image, q_tl, q_tr, q_bl, q_br, prompt],
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json", response_schema=RetinalAnalysis,
                         ),
@@ -200,17 +211,17 @@ if uploaded_file is not None:
                 except Exception as e:
                     st.error(f"Processing error: {e}")
 
-    # --- DISPLAY DIAGNOSTICS & CONVERSATIONAL FRAME ---
+    # --- DISPLAY DIAGNOSTICS & CONVERSATIONAL CHAT ---
     if st.session_state.analysis is not None:
         st.write("---")
-        # Map onto the super enhanced image so boundaries are clear to the user
-        mapped_img, records = map_retina(super_enhanced_image, st.session_state.analysis.get("lesions", []))
+        # Draw bounding boxes onto the processed vibrance image for perfect clinical clarity
+        mapped_img, records = map_retina(processed_image, st.session_state.analysis.get("lesions", []))
         
         ui_left, ui_right = st.columns([1.2, 0.8])
         
         with ui_left:
             st.subheader("Interactive Retina Map")
-            st.image(mapped_img, caption="Super-Vision Combined Pathology Map", use_container_width=True)
+            st.image(mapped_img, caption="Combined Quadrant Pathology Map", use_container_width=True)
             
             st.metric(label="Calculated ICDR Class", value=st.session_state.analysis["dr_stage"])
             st.info(f"**AI Notes:** {st.session_state.analysis['justification']}")
@@ -222,7 +233,7 @@ if uploaded_file is not None:
         
         with ui_right:
             st.subheader("💬 Clinical Chat & Feedback Room")
-            st.caption("Guide the model toward missed edge variations:")
+            st.caption("Point out quadrant-specific details directly to the AI:")
             
             chat_container = st.container(height=420)
             with chat_container:
@@ -230,24 +241,25 @@ if uploaded_file is not None:
                     with st.chat_message(msg["role"]):
                         st.write(msg["content"])
             
-            if user_input := st.chat_input("Ex: 'Recalculate. The sharpened edge on the right is an exudate pattern.'"):
+            if user_input := st.chat_input("Ex: 'Examine Quadrant II again. The sharpened spot on the top right is a soft exudate.'"):
                 with chat_container:
                     with st.chat_message("user"):
                         st.write(user_input)
                 
                 st.session_state.chat_history.append({"role": "user", "content": user_input})
                 
-                with st.spinner("Analyzing targets..."):
+                with st.spinner("Re-evaluating frames with your clinical feedback..."):
                     client = genai.Client(api_key=api_key)
                     
                     chat_context_prompt = (
-                        "You are reviewing an updated clinical fundus report. The user has access to a super-preprocessed visualization matrix. "
-                        "Look at the uploaded original image and super-enhanced vision frame closely. "
-                        "Respond to the user's feedback. If they call attention to a specific sharpened edge structure or vibrant color point that you missed, "
-                        "re-verify the region immediately and offer an adjusted diagnostic perspective based on the clinical data. Keep responses brief."
+                        "You are reviewing an updated clinical fundus report. The user has access to a segmented view consisting of 4 quadrants "
+                        "(Top-Left, Top-Right, Bottom-Left, Bottom-Right) with custom vibrance and sharpening to find hidden lesions.\n\n"
+                        "Respond to the user's feedback. If they call attention to a specific quadrant structure or color point that you missed, "
+                        "re-verify that specific quadrant immediately, explain what you see, and offer an adjusted diagnostic perspective. Keep responses brief."
                     )
                     
-                    conversation_payload = [original_image, super_enhanced_image, chat_context_prompt]
+                    # Feed all visual data and chat memory back to the model
+                    conversation_payload = [original_image, processed_image, q_tl, q_tr, q_bl, q_br, chat_context_prompt]
                     for history_item in st.session_state.chat_history:
                         conversation_payload.append(f"{history_item['role']}: {history_item['content']}")
                         
