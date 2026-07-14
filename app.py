@@ -22,7 +22,7 @@ if uploaded_file is not None:
                 try:
                     client = genai.Client(api_key=api_key)
                     prompt = "You are an expert ophthalmologist. Identify lesions, state the DR stage, and give a clear clinical justification."
-                    response = client.models.generate_content(model='gemini-2.5-flash', contents=[image, prompt])
+                    response = client.models.generate_content(model='gemini-3.5-flash', contents=[image, prompt])
                     st.success("Analysis Complete!")
                     st.markdown(response.text)
                 except Exception as e:
