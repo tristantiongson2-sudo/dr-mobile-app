@@ -9,7 +9,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 st.set_page_config(page_title="DR Mobile Assistant", layout="wide")
-st.title("👁️ DR Mobile Assistant with Quadrant-Split Visual Engineering")
+st.title("👁️ DR Mobile Assistant with Advanced Quality Restoration")
 
 # Define structured output format
 class Lesion(BaseModel):
@@ -36,17 +36,94 @@ if "chat_history" not in st.session_state:
 if "last_uploaded" not in st.session_state:
     st.session_state.last_uploaded = None
 
-# --- UPGRADED: VIBRANCE & UNSHARP MASK (NO CLAHE) ---
+# --- SIDEBAR INTERACTIVE QUALITY CONTROLS ---
+st.sidebar.header("🛠️ Image Quality & Restoration")
+enable_enhancement = st.sidebar.checkbox("Enable Quality Enhancer", value=True)
+
+if enable_enhancement:
+    denoise_strength = st.sidebar.slider(
+        "Denoise Strength (Bilateral)", 
+        0, 10, 3, 
+        help="Smooths out camera sensor grain without blurring lesion edges."
+    )
+    clahe_clip = st.sidebar.slider(
+        "Contrast Stretch (LAB-CLAHE)", 
+        0.0, 4.0, 1.5, step=0.5, 
+        help="Boosts structural details in dark/shadowed regions without shifting natural colors."
+    )
+    gamma_val = st.sidebar.slider(
+        "Gamma (Exposure Balance)", 
+        0.5, 2.0, 1.0, step=0.1, 
+        help="Adjusts brightness. >1.0 brightens shadows; <1.0 tones down bright flash hotspots."
+    )
+else:
+    denoise_strength = 0
+    clahe_clip = 0.0
+    gamma_val = 1.0
+
+# --- QUALITY RESTORATION PIPELINE ---
+def apply_quality_restoration(pil_image, denoise_sigma, clahe_clip_limit, gamma):
+    # Convert PIL Image to OpenCV BGR format
+    img_bgr = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
+    
+    # 1. Bilateral Filter (Smooths noise, keeps crisp edges)
+    if denoise_sigma > 0:
+        img_bgr = cv2.bilateralFilter(
+            img_bgr, 
+            d=9, 
+            sigmaColor=denoise_sigma * 10, 
+            sigmaSpace=denoise_sigma * 10
+        )
+    
+    # 2. Gamma Correction (Illumination balance)
+    if gamma != 1.0:
+        inv_gamma = 1.0 / gamma
+        lookup_table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+        img_bgr = cv2.LUT(img_bgr, lookup_table)
+        
+    # 3. LAB-Space CLAHE (Color-safe local contrast stretch)
+    if clahe_clip_limit > 0:
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        
+        # Apply CLAHE only on the Lightness (L) channel to keep original colors pure
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+        cl = clahe.apply(l_channel)
+        
+        img_bgr = cv2.cvtColor(cv2.merge((cl, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+        
+    return Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+
+
+# --- VIBRANCE & TARGETED 5X YELLOW-BOOST PREPROCESSING ---
 def preprocess_vibrance_sharpen(pil_image):
     # Convert PIL Image to OpenCV BGR format
     img_bgr = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     
-    # 1. HSV Saturation Tuning (Vibrance Boost)
+    # 1. Convert to HSV to isolate color channels
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    # Boost saturation to isolate faint yellow exudates from the red retinal background
-    s_boosted = cv2.addWeighted(s, 1.4, np.zeros(s.shape, s.dtype), 0, 15)
-    img_vibrant = cv2.cvtColor(cv2.merge((h, s_boosted, v)), cv2.COLOR_HSV2BGR)
+    
+    # Define the HSV range for yellow-ish hues (captures light yellow, faint orange, and greenish-yellow)
+    lower_yellow_hue = 12
+    upper_yellow_hue = 35
+    
+    # Create a mask specifically for yellow pixels.
+    # Minimum threshold for Saturation (s > 20) and Value (v > 20) avoids boosting background noise.
+    yellow_mask = (h >= lower_yellow_hue) & (h <= upper_yellow_hue) & (s > 20) & (v > 20)
+    
+    # Convert Saturation to float to prevent mathematical overflow during 5x multiplication
+    s_float = s.astype(np.float32)
+    s_float[yellow_mask] = s_float[yellow_mask] * 5.0
+    s_boosted = np.clip(s_float, 0, 255).astype(np.uint8)
+    
+    # Give the yellow pixels a 1.2x brightness (Value) boost so they glow slightly against dark red tissue
+    v_float = v.astype(np.float32)
+    v_float[yellow_mask] = v_float[yellow_mask] * 1.2
+    v_boosted = np.clip(v_float, 0, 255).astype(np.uint8)
+    
+    # Merge the boosted yellow channels back together
+    img_vibrant = cv2.cvtColor(cv2.merge((h, s_boosted, v_boosted)), cv2.COLOR_HSV2BGR)
     
     # 2. Unsharp Masking (Micro-Edge Sharpening)
     gaussian_blur = cv2.GaussianBlur(img_vibrant, (5, 5), 1.5)
@@ -56,7 +133,7 @@ def preprocess_vibrance_sharpen(pil_image):
     final_rgb = cv2.cvtColor(img_sharpened, cv2.COLOR_BGR2RGB)
     return Image.fromarray(final_rgb)
 
-# --- NEW: QUADRANT SPLITTING ENGINE ---
+# --- QUADRANT SPLITTING ENGINE ---
 def split_into_quadrants(pil_image):
     width, height = pil_image.size
     w_half, h_half = width // 2, height // 2
@@ -69,27 +146,12 @@ def split_into_quadrants(pil_image):
     
     return q_top_left, q_top_right, q_bottom_left, q_bottom_right
 
-# --- HYBRID PATHOLOGY MAPPING ---
+# --- PATHOLOGY ONLY MAPPING (UGAT MAPPING REMOVED) ---
 def map_retina(pil_image, lesions):
     rgb_image = pil_image.convert("RGB")
     width, height = rgb_image.size
     
-    cv_img = cv2.cvtColor(np.array(rgb_image), cv2.COLOR_RGB2BGR)
-    green = cv_img[:, :, 1]
-    
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    contrast_enhanced = clahe.apply(green)
-    background = cv2.medianBlur(contrast_enhanced, 25)
-    vessel_subtracted = cv2.subtract(background, contrast_enhanced)
-    
-    _, thresh = cv2.threshold(vessel_subtracted, 12, 255, cv2.THRESH_BINARY)
-    kernel = np.ones((3, 3), np.uint8)
-    clean_vessels = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-    
-    vessel_rgba = np.zeros((height, width, 4), dtype=np.uint8)
-    vessel_rgba[clean_vessels == 255] = [0, 180, 255, 90] 
-    vessel_layer = Image.fromarray(vessel_rgba, "RGBA")
-    
+    # Dynamic transparent canvas layer for lesion polygons and labels
     overlay_layer = Image.new("RGBA", rgb_image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay_layer)
     
@@ -135,7 +197,8 @@ def map_retina(pil_image, lesions):
         site_records.append({"site": f"Site {site_letter}", "color": color_name, "type": display_label, "coordinates": f"X: {x1}-{x2}, Y: {y1}-{y2}"})
         
     base_rgba = rgb_image.convert("RGBA")
-    final_output = Image.alpha_composite(Image.alpha_composite(base_rgba, vessel_layer), overlay_layer)
+    # Composite the bounding boxes directly onto the image without any vessel layers
+    final_output = Image.alpha_composite(base_rgba, overlay_layer)
     return final_output.convert("RGB"), site_records
 
 
@@ -149,9 +212,14 @@ if uploaded_file is not None:
         st.session_state.last_uploaded = uploaded_file.name
 
     original_image = Image.open(uploaded_file)
-    processed_image = preprocess_vibrance_sharpen(original_image)
     
-    # Split the vibrant/sharpened image into quadrants
+    # Step 1: Run restoration (Denoise, Exposure, Dynamic contrast stretching)
+    restored_image = apply_quality_restoration(original_image, denoise_strength, clahe_clip, gamma_val)
+    
+    # Step 2: Run diagnostic features (Vibrance, Yellow-channel boost, Edge sharpening)
+    processed_image = preprocess_vibrance_sharpen(restored_image)
+    
+    # Step 3: Split the fully processed image into 4 quadrant frames
     q_tl, q_tr, q_bl, q_br = split_into_quadrants(processed_image)
     
     st.write("### 🎛️ Clinical Preprocessing & Quadrant Division")
@@ -159,7 +227,7 @@ if uploaded_file is not None:
     with col_orig: 
         st.image(original_image, caption="1. Original Raw Retinal File", use_container_width=True)
     with col_proc: 
-        st.image(processed_image, caption="2. Vibrance & Edge Sharpened Image", use_container_width=True)
+        st.image(processed_image, caption="2. Restored & Yellow-Boosted (5x) Image", use_container_width=True)
     
     # Display the quadrants in a beautiful 4-column row
     st.write("#### 🧩 Quadrant breakdown (Enhanced for Detailed Local Analysis)")
@@ -221,7 +289,7 @@ if uploaded_file is not None:
         
         with ui_left:
             st.subheader("Interactive Retina Map")
-            st.image(mapped_img, caption="Combined Quadrant Pathology Map", use_container_width=True)
+            st.image(mapped_img, caption="Combined Quadrant Pathology Map (Without Vessels)", use_container_width=True)
             
             st.metric(label="Calculated ICDR Class", value=st.session_state.analysis["dr_stage"])
             st.info(f"**AI Notes:** {st.session_state.analysis['justification']}")
@@ -253,7 +321,7 @@ if uploaded_file is not None:
                     
                     chat_context_prompt = (
                         "You are reviewing an updated clinical fundus report. The user has access to a segmented view consisting of 4 quadrants "
-                        "(Top-Left, Top-Right, Bottom-Left, Bottom-Right) with custom vibrance and sharpening to find hidden lesions.\n\n"
+                        "(Top-Left, Top-Right, Bottom-Left, Bottom-Right) with custom yellow-boosted vibrance and sharpening to find hidden lesions.\n\n"
                         "Respond to the user's feedback. If they call attention to a specific quadrant structure or color point that you missed, "
                         "re-verify that specific quadrant immediately, explain what you see, and offer an adjusted diagnostic perspective. Keep responses brief."
                     )
